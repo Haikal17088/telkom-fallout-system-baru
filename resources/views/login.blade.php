@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="id">
 
 <head>
@@ -1226,7 +1226,7 @@
 
   <script>
 
-    function togglePassword(
+    window.togglePassword = function togglePassword(
       inputId,
       eyeId
     ){
@@ -1266,3 +1266,4 @@
 
 </body>
 </html>
+

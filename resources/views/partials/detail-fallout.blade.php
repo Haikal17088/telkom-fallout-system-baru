@@ -422,16 +422,26 @@
 <div class="df-wrap">
 
     {{-- Loading khusus halaman Detail Fallout --}}
-    <div class="df-page-loading" id="dfPageLoading" aria-live="polite" aria-label="Memuat Detail Fallout">
-    <div class="df-page-loading-card">
-      <div class="df-page-loading-logo">
-        <span>TF</span>
-      </div>
-      <div class="df-page-loading-spinner" aria-hidden="true"></div>
-      <div class="df-page-loading-title">Memuat Detail Fallout</div>
-      <div class="df-page-loading-subtitle">Menyiapkan data {{ $witel }}</div>
+    <div
+        class="df-page-loading"
+        id="dfPageLoading"
+        aria-live="polite"
+        aria-label="Memuat Detail Fallout"
+    >
+        <div class="df-page-loading-card">
+            <div class="df-page-loading-logo">TF</div>
+            <div
+                class="df-page-loading-spinner"
+                aria-hidden="true"
+            ></div>
+            <div class="df-page-loading-title">
+                Memuat Detail Fallout
+            </div>
+            <div class="df-page-loading-subtitle">
+                Menyiapkan data {{ $witel }}
+            </div>
+        </div>
     </div>
-  </div>
 
 
     {{-- =========================================================
@@ -1167,41 +1177,50 @@
 
 
   .df-page-loading{
-    pointer-events:auto;
-    cursor:none;
-    user-select:none;
-    overflow:hidden;
     position:absolute;
     inset:0;
-    z-index:99999;
+    width:100%;
+    height:100%;
+    min-height:100%;
+    z-index:999999;
     display:flex;
     align-items:center;
     justify-content:center;
     padding:28px;
-    background:rgba(250,247,247,.94);
-    backdrop-filter:blur(8px);
-    -webkit-backdrop-filter:blur(8px);
+    box-sizing:border-box;
+    overflow:hidden;
+    user-select:none;
+    pointer-events:auto;
+    touch-action:none;
+    background:#faf7f7;
     border-radius:22px;
-    transition:opacity .28s ease, visibility .28s ease;
-  }
+    cursor:none !important;
+}
 
-  .df-page-loading.is-hidden{
+.df-page-loading.is-hidden{
+    display:none !important;
     opacity:0;
     visibility:hidden;
     pointer-events:none;
-  }
+}
 
-  .df-page-loading-card{
-    width:min(320px, 100%);
+.df-page-loading,
+.df-page-loading *{
+    cursor:none !important;
+}
+
+.df-page-loading-card{
+    width:min(320px,100%);
     padding:28px 24px 24px;
     text-align:center;
-    border:1px solid rgba(255,255,255,.9);
+    border:1px solid rgba(255,255,255,.95);
     border-radius:18px;
-    background:rgba(255,255,255,.88);
-    box-shadow:0 24px 60px -30px rgba(58,4,16,.30);
-  }
+    background:#fff;
+    box-shadow:0 18px 45px -28px rgba(58,4,16,.24);
+    cursor:none !important;
+}
 
-  .df-page-loading-logo{
+.df-page-loading-logo{
     width:52px;
     height:52px;
     margin:0 auto 14px;
@@ -1214,10 +1233,11 @@
     font-size:17px;
     font-weight:700;
     letter-spacing:.03em;
-    box-shadow:0 12px 24px -12px rgba(200,16,46,.75);
-  }
+    box-shadow:0 10px 22px -14px rgba(200,16,46,.65);
+    cursor:none !important;
+}
 
-  .df-page-loading-spinner{
+.df-page-loading-spinner{
     width:30px;
     height:30px;
     margin:0 auto 14px;
@@ -1225,28 +1245,35 @@
     border-top-color:#C8102E;
     border-right-color:#8A0F26;
     border-radius:50%;
-    animation:dfPageLoadingSpin .8s linear infinite;
-  }
+    animation:dfPageLoadingSpin .72s linear infinite;
+}
 
-  .df-page-loading-title{
+.df-page-loading-title{
     font-family:'Space Grotesk',sans-serif;
     font-size:14px;
     font-weight:700;
     color:#20161A;
-  }
+    cursor:none !important;
+}
 
-  .df-page-loading-subtitle{
+.df-page-loading-subtitle{
     margin-top:5px;
     font-family:'Inter',sans-serif;
     font-size:11px;
     line-height:1.5;
     color:#817377;
-  }
+    cursor:none !important;
+}
 
-  @keyframes dfPageLoadingSpin{
-    to{ transform:rotate(360deg); }
-  }
+@keyframes dfPageLoadingSpin{
+    to{transform:rotate(360deg);}
+}
 
+/* Saat loader aktif, cursor disembunyikan hanya dalam area Detail Fallout. */
+.df-wrap.df-detail-loading,
+.df-wrap.df-detail-loading *{
+    cursor:none !important;
+}
 .df-head h2{
     margin:0;
     font-family:'Space Grotesk',sans-serif;
@@ -2018,30 +2045,6 @@
     }
 
 }
-
-
-
-  /* FULL PAGE LOADING LOCK — hanya halaman ini, tanpa menyentuh dashboard/sidebar */
-  html.dfLoadingLock, body.dfLoadingLock{
-    overflow:hidden !important;
-    cursor:none !important;
-  }
-
-  body.dfLoadingLock *,
-  html.dfLoadingLock *{
-    cursor:none !important;
-  }
-
-  .df-wrap.dfLoadingLock{
-    overflow:hidden !important;
-    cursor:none !important;
-  }
-
-  .df-page-loading.is-hidden{
-    cursor:none !important;
-  }
-
-
 /* =========================================================
    FINAL TABLE FIX — SESUAI TABEL WEB ASLI
    ========================================================= */
@@ -2255,71 +2258,82 @@
 
 (function () {
 
-    // ============================================================
-    // FULL LOADING LOCK — seperti Edit Data: seluruh area halaman
-    // tertutup, scrollbar dikunci, dan cursor disembunyikan 1 detik.
-    // ============================================================
+    /*
+    |--------------------------------------------------------------------------
+    | DETAIL FALLOUT LOADER — TUTUP AREA DETAIL SAJA
+    |--------------------------------------------------------------------------
+    */
     (function () {
-        const pageLoading = document.getElementById('dfPageLoading');
-        const pageWrap = document.querySelector('.df-wrap');
-        const lockClass = 'dfLoadingLock';
-        const lockedNodes = [];
+        const pageWrap =
+            document.querySelector('.df-wrap');
 
-        if (!pageLoading || !pageWrap) return;
+        const pageLoading =
+            document.getElementById('dfPageLoading');
 
-        function lockScrollableParents() {
-            let node = pageWrap;
+        if (!pageWrap || !pageLoading) {
+            return;
+        }
 
-            while (node) {
-                const style = window.getComputedStyle(node);
-                const canScrollY =
-                    ['auto', 'scroll', 'overlay'].includes(style.overflowY) ||
-                    node.scrollHeight > node.clientHeight + 1;
-                const canScrollX =
-                    ['auto', 'scroll', 'overlay'].includes(style.overflowX) ||
-                    node.scrollWidth > node.clientWidth + 1;
+        pageWrap.classList.add(
+            'df-detail-loading'
+        );
 
-                if (canScrollY || canScrollX) {
-                    lockedNodes.push({
-                        node,
-                        overflow: node.style.overflow,
-                        overflowY: node.style.overflowY,
-                        overflowX: node.style.overflowX,
-                    });
+        const stopPageMove = function (event) {
+            event.preventDefault();
+        };
 
-                    node.style.setProperty('overflow', 'hidden', 'important');
-                    node.style.setProperty('overflow-y', 'hidden', 'important');
-                    node.style.setProperty('overflow-x', 'hidden', 'important');
+        pageLoading.addEventListener(
+            'wheel',
+            stopPageMove,
+            { passive: false }
+        );
+
+        pageLoading.addEventListener(
+            'touchmove',
+            stopPageMove,
+            { passive: false }
+        );
+
+        window.setTimeout(
+            function () {
+                pageLoading.classList.add(
+                    'is-hidden'
+                );
+
+                pageWrap.classList.remove(
+                    'df-detail-loading'
+                );
+
+                pageLoading.removeEventListener(
+                    'wheel',
+                    stopPageMove
+                );
+
+                pageLoading.removeEventListener(
+                    'touchmove',
+                    stopPageMove
+                );
+
+                if (
+                    pageLoading &&
+                    pageLoading.parentNode
+                ) {
+                    pageLoading.parentNode.removeChild(
+                        pageLoading
+                    );
                 }
-
-                if (node === document.body) break;
-                node = node.parentElement;
-            }
-        }
-
-        function unlockScrollableParents() {
-            lockedNodes.reverse().forEach(function (item) {
-                item.node.style.overflow = item.overflow;
-                item.node.style.overflowY = item.overflowY;
-                item.node.style.overflowX = item.overflowX;
-            });
-        }
-
-        document.documentElement.classList.add(lockClass);
-        document.body.classList.add(lockClass);
-        pageWrap.classList.add(lockClass);
-        pageLoading.style.cursor = 'none';
-
-        lockScrollableParents();
-
-        setTimeout(function () {
-            unlockScrollableParents();
-            pageWrap.classList.remove(lockClass);
-            document.documentElement.classList.remove(lockClass);
-            document.body.classList.remove(lockClass);
-            pageLoading.classList.add('is-hidden');
-        }, 1000);
+            },
+            350
+        );
     })();
+
+
+
+
+
+
+
+
 
     /*
     |--------------------------------------------------------------------------

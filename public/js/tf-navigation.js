@@ -311,34 +311,42 @@
         return loadedExternalScripts[absolute];
     }
 
-    async function runScripts(root) {
+    function runScripts(root) {
         if (!root) {
-            return;
+            return Promise.resolve();
         }
 
         var scripts = Array.from(root.querySelectorAll('script'));
+        var chain = Promise.resolve();
 
-        for (var i = 0; i < scripts.length; i++) {
-            var oldScript = scripts[i];
-
+        scripts.forEach(function (oldScript) {
             if (oldScript.src) {
-                try {
-                    await loadExternalScript(oldScript.src);
-                } catch (e) {
-                    // Keep navigation usable even when an optional CDN script fails.
-                }
-                continue;
+                /*
+                 * Mulai load CDN sekarang, tetapi jangan blokir perpindahan
+                 * halaman. Inline script setelahnya tetap menunggu library
+                 * tersebut selesai agar Chart.js / SheetJS tetap aman.
+                 */
+                chain = chain.then(function () {
+                    return loadExternalScript(oldScript.src).catch(function () {
+                        // Library opsional gagal; halaman tetap boleh tampil.
+                    });
+                });
+                return;
             }
 
             var source = oldScript.textContent || '';
             if (source.trim() !== '') {
-                try {
-                    runInlineScript(source);
-                } catch (e) {
-                    // One optional page script should not break navigation.
-                }
+                chain = chain.then(function () {
+                    try {
+                        runInlineScript(source);
+                    } catch (e) {
+                        // Satu script opsional tidak boleh merusak navigasi.
+                    }
+                });
             }
-        }
+        });
+
+        return chain;
     }
 
     function removeInitialPageLoaders(root) {
@@ -426,7 +434,11 @@
             document.title = nextDoc.title || document.title;
             document.body.setAttribute('data-tf-nav', 'dashboard');
 
-            await runScripts(currentContent);
+            /*
+             * Jangan menunggu script/CDN sebelum UI berpindah.
+             * Konten tampil segera; script partial berjalan di background.
+             */
+            runScripts(currentContent).catch(function () {});
 
             if (options.push !== false) {
                 window.history.pushState({}, '', url.href);
@@ -492,6 +504,20 @@
             await navigatePublic(url, options);
         }
     }
+
+    /*
+     * Public SPA API untuk partial yang perlu berpindah GET
+     * tanpa full document reload.
+     */
+    window.tfNavigate = function (url, options) {
+        var target = new URL(url, window.location.href);
+
+        if (!isSameOrigin(target)) {
+            return;
+        }
+
+        return navigate(target, options || {push: true});
+    };
 
     document.addEventListener('click', function (event) {
         if (

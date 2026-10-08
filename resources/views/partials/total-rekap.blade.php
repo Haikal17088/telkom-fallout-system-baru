@@ -1,337 +1,529 @@
 @php
-// ── Query SEMUA data Fallout dari database ────────────────────────────
-// Tidak dibatasi bulan berjalan. Setiap tab otomatis memakai periode
-// terbaru yang memang tersedia di database, lalu filter dapat diganti.
-$allRows = \App\Models\FalloutData::forWitel($witelSlug)
-->orderByDesc('tanggal')
-->orderByDesc('row_id')
-->get();
+/*
+ * Query DATA dibuat identik dengan Detail Fallout yang sudah terbukti
+ * menampilkan data database.
+ *
+ * Hanya kolom yang dibutuhkan untuk ringkasan yang diambil.
+ * Setelah request ini selesai, filter Harian/Bulanan/Tahunan
+ * diproses di browser tanpa request baru.
+ */
+$dbRows = \Illuminate\Support\Facades\DB::table('fallout_data')
+    ->join(
+        'upload_batches',
+        'upload_batches.batch_id',
+        '=',
+        'fallout_data.batch_id'
+    )
+    ->join(
+        'branches',
+        'branches.branch_id',
+        '=',
+        'upload_batches.branch_id'
+    )
+    ->whereRaw(
+        'LOWER(TRIM(branches.kode_cabang)) = ?',
+        [
+            strtolower(
+                trim((string) $witelSlug)
+            )
+        ]
+    )
+    ->orderByDesc('fallout_data.tanggal')
+    ->orderByDesc('fallout_data.row_id')
+    ->get([
+        'fallout_data.tanggal',
+        'fallout_data.sto',
+        'fallout_data.resolved_eskalasi',
+        'fallout_data.status',
+        'fallout_data.uploaded_by',
+    ]);
 
-// Periode yang benar-benar tersedia di database.
-$availableDates = $allRows
-->filter(fn ($row) => !empty($row->tanggal))
-->map(fn ($row) => \Carbon\Carbon::parse($row->tanggal)->format('Y-m-d'))
-->unique()
-->sortDesc()
-->values();
-
-$availableMonths = $allRows
-->filter(fn ($row) => !empty($row->tanggal))
-->map(fn ($row) => \Carbon\Carbon::parse($row->tanggal)->format('Y-m'))
-->unique()
-->sortDesc()
-->values();
-
-$availableYears = $allRows
-->filter(fn ($row) => !empty($row->tanggal))
-->map(fn ($row) => \Carbon\Carbon::parse($row->tanggal)->format('Y'))
-->unique()
-->sortDesc()
-->values();
-
-$range = request()->query('range', 'harian');
-
-if (!in_array($range, ['harian', 'bulanan', 'tahunan'], true)) {
-    $range = 'bulanan';
-}
-
-// Default otomatis = periode TERBARU yang tersedia.
-$selectedDate = request()->query(
-    'tanggal',
-    $availableDates->first() ?? now()->format('Y-m-d')
-);
-
-$latestMonthValue = $availableMonths->first() ?? now()->format('Y-m');
-
-$selectedMonth = request()->query(
-    'bulan',
-    \Illuminate\Support\Str::substr($latestMonthValue, 5, 2)
-);
-
-$selectedYear = request()->query(
-    'tahun',
-    \Illuminate\Support\Str::substr($latestMonthValue, 0, 4)
-);
-
-if (!$availableDates->contains($selectedDate)) {
-    $selectedDate = $availableDates->first() ?? now()->format('Y-m-d');
-}
-
-$monthValues = collect(range(1, 12))->mapWithKeys(function ($month) {
+$makeSummary = static function () {
     return [
-        str_pad((string) $month, 2, '0', STR_PAD_LEFT)
-        => \Carbon\Carbon::create(2000, $month, 1)->translatedFormat('F')
+        'total' => 0,
+        'resolved' => 0,
+        'completed' => 0,
+        'cancel' => 0,
+        'eskalasi_dit' => 0,
+        'close' => 0,
+        'sto' => 0,
+        'sto_breakdown' => [],
+        'uploaders' => [],
     ];
-});
+};
 
-if (!$monthValues->has((string) $selectedMonth)) {
-    $selectedMonth = \Illuminate\Support\Str::substr(
+$daily = [];
+$monthly = [];
+$yearly = [];
+$uploaderIds = [];
+
+foreach ($dbRows as $row) {
+    if (empty($row->tanggal)) {
+        continue;
+    }
+
+    $dayKey = \Carbon\Carbon::parse(
+        $row->tanggal
+    )->format('Y-m-d');
+
+    $monthKey = substr($dayKey, 0, 7);
+    $yearKey = substr($dayKey, 0, 4);
+
+    foreach (
+        [
+            ['key' => $dayKey, 'bucket' => &$daily],
+            ['key' => $monthKey, 'bucket' => &$monthly],
+            ['key' => $yearKey, 'bucket' => &$yearly],
+        ] as &$target
+    ) {
+        if (!isset($target['bucket'][$target['key']])) {
+            $target['bucket'][$target['key']] =
+                $makeSummary();
+        }
+
+        $target['bucket'][$target['key']]['total']++;
+
+        $resolvedState = strtolower(
+            trim(
+                (string) (
+                    $row->resolved_eskalasi ?? ''
+                )
+            )
+        );
+
+        $statusState = strtolower(
+            trim(
+                (string) (
+                    $row->status ?? ''
+                )
+            )
+        );
+
+        if ($resolvedState === 'resolved') {
+            $target['bucket'][$target['key']]['resolved']++;
+        }
+
+        if ($statusState === 'completed') {
+            $target['bucket'][$target['key']]['completed']++;
+        }
+
+        if ($resolvedState === 'cancel') {
+            $target['bucket'][$target['key']]['cancel']++;
+        }
+
+        if ($resolvedState === 'eskalasi_dit') {
+            $target['bucket'][$target['key']]['eskalasi_dit']++;
+        }
+
+        if ($resolvedState === 'close') {
+            $target['bucket'][$target['key']]['close']++;
+        }
+
+        $sto = strtoupper(
+            trim(
+                (string) (
+                    $row->sto ?? ''
+                )
+            )
+        );
+
+        if ($sto !== '') {
+            $target['bucket'][$target['key']]['sto_breakdown'][$sto] =
+                (
+                    $target['bucket'][$target['key']]['sto_breakdown'][$sto]
+                    ?? 0
+                ) + 1;
+        }
+
+        if (
+            $row->uploaded_by !== null
+            && $row->uploaded_by !== ''
+        ) {
+            $idKey = (string) $row->uploaded_by;
+
+            $target['bucket'][$target['key']]['uploaders'][$idKey] =
+                (
+                    $target['bucket'][$target['key']]['uploaders'][$idKey]
+                    ?? 0
+                ) + 1;
+
+            $uploaderIds[$idKey] =
+                $row->uploaded_by;
+        }
+    }
+
+    unset($target);
+}
+
+foreach (
+    [
+        &$daily,
+        &$monthly,
+        &$yearly,
+    ] as &$collection
+) {
+    foreach ($collection as &$bucket) {
+        arsort($bucket['sto_breakdown']);
+        $bucket['sto'] =
+            count($bucket['sto_breakdown']);
+
+        arsort($bucket['uploaders']);
+    }
+}
+
+unset($collection, $bucket);
+
+$uploaderNames = collect();
+
+if (!empty($uploaderIds)) {
+    $uploaderNames = \App\Models\User::query()
+        ->whereIn(
+            'id',
+            array_values($uploaderIds)
+        )
+        ->pluck('name', 'id');
+}
+
+foreach (
+    [
+        &$daily,
+        &$monthly,
+        &$yearly,
+    ] as &$collection
+) {
+    foreach ($collection as &$bucket) {
+        $namedUploaders = [];
+
+        foreach (
+            $bucket['uploaders']
+            as $id => $count
+        ) {
+            $name = $uploaderNames->get(
+                $uploaderIds[$id] ?? $id,
+                'Tidak diketahui'
+            );
+
+            $namedUploaders[$name] =
+                (int) $count;
+        }
+
+        $bucket['uploaders'] =
+            $namedUploaders;
+    }
+}
+
+unset($collection, $bucket);
+
+krsort($daily);
+krsort($monthly);
+krsort($yearly);
+
+$availableDates =
+    collect(array_keys($daily))
+        ->values();
+
+$availableMonths =
+    collect(array_keys($monthly))
+        ->values();
+
+$availableYears =
+    collect(array_keys($yearly))
+        ->values();
+
+$range = request()->query('range');
+
+if (!in_array(
+    $range,
+    [
+        'harian',
+        'bulanan',
+        'tahunan',
+    ],
+    true
+)) {
+    $range = 'harian';
+}
+
+$latestAvailableDate =
+    $availableDates->first()
+    ?? now()->format('Y-m-d');
+
+$requestDate =
+    request()->query('tanggal');
+
+$selectedDate = (
+    is_string($requestDate)
+    && preg_match(
+        '/^\d{4}-\d{2}-\d{2}$/',
+        $requestDate
+    )
+)
+    ? $requestDate
+    : $latestAvailableDate;
+
+$latestMonthValue =
+    $availableMonths->first()
+    ?? now()->format('Y-m');
+
+$requestMonth =
+    request()->query('bulan');
+
+$selectedMonthValue = (
+    is_string($requestMonth)
+    && preg_match(
+        '/^\d{4}-\d{2}$/',
+        $requestMonth
+    )
+)
+    ? $requestMonth
+    : $latestMonthValue;
+
+$requestYear =
+    request()->query('tahun');
+
+$selectedYear = (
+    is_string($requestYear)
+    && preg_match(
+        '/^\d{4}$/',
+        $requestYear
+    )
+)
+    ? $requestYear
+    : substr(
         $latestMonthValue,
+        0,
+        4
+    );
+
+$selectedMonth =
+    substr(
+        $selectedMonthValue,
         5,
         2
     );
-}
 
-if (!$availableYears->contains((string) $selectedYear)) {
-    $selectedYear = $availableYears->first() ?? now()->format('Y');
-}
+$monthValues =
+    collect(range(1, 12))
+        ->mapWithKeys(
+            static function ($month) {
+                $value =
+                    str_pad(
+                        (string) $month,
+                        2,
+                        '0',
+                        STR_PAD_LEFT
+                    );
 
-$selectedMonthValue = sprintf(
-    '%s-%s',
-    $selectedYear,
-    str_pad((string) $selectedMonth, 2, '0', STR_PAD_LEFT)
-);
+                return [
+                    $value =>
+                        \Carbon\Carbon::create(
+                            2000,
+                            (int) $month,
+                            1
+                        )->translatedFormat('F')
+                ];
+            }
+        );
 
-// Data aktif mengikuti tab + filter yang sedang dipilih.
-$activeRows = $allRows->filter(function ($row) use (
-    $range,
-    $selectedDate,
-    $selectedMonth,
-    $selectedYear,
-    $selectedMonthValue
-) {
+$currentKey = match ($range) {
+    'tahunan' =>
+        (string) $selectedYear,
 
-    if (empty($row->tanggal)) {
-        return false;
-    }
+    'bulanan' =>
+        (string) $selectedMonthValue,
 
-    $date = \Carbon\Carbon::parse($row->tanggal);
+    default =>
+        (string) $selectedDate,
+};
 
-    if ($range === 'harian') {
-        return $date->format('Y-m-d') === $selectedDate;
-    }
+$current = match ($range) {
+    'tahunan' =>
+        $yearly[$currentKey]
+        ?? $makeSummary(),
 
-    if ($range === 'tahunan') {
-        return $date->format('Y') === (string) $selectedYear;
-    }
+    'bulanan' =>
+        $monthly[$currentKey]
+        ?? $makeSummary(),
 
-    return $date->format('Y-m') === $selectedMonthValue;
-})->values();
-
-$total = $activeRows->count();
-
-$resolved = $activeRows
-->filter(
-    fn ($row) =>
-        strtolower(
-            trim(
-                (string) ($row->resolved_eskalasi ?? '')
-            )
-        ) === 'resolved'
-)
-->count();
-
-$completed = $activeRows
-->filter(
-    fn ($row) =>
-        strtolower(
-            trim(
-                (string) ($row->status ?? '')
-            )
-        ) === 'completed'
-)
-->count();
-
-$cancel = $activeRows
-->filter(
-    fn ($row) =>
-        strtolower(
-            trim(
-                (string) ($row->resolved_eskalasi ?? '')
-            )
-        ) === 'cancel'
-)
-->count();
-
-$eskalasiDit = $activeRows
-->filter(
-    fn ($row) =>
-        strtolower(
-            trim(
-                (string) ($row->resolved_eskalasi ?? '')
-            )
-        ) === 'eskalasi_dit'
-)
-->count();
-
-$close = $activeRows
-->filter(
-    fn ($row) =>
-        strtolower(
-            trim(
-                (string) ($row->resolved_eskalasi ?? '')
-            )
-        ) === 'close'
-)
-->count();
-
-// Uploader mengikuti periode aktif.
-$uploaders = $activeRows
-->whereNotNull('uploaded_by')
-->groupBy('uploaded_by')
-->map(function ($group) {
-    $first = $group->first();
-
-    return [
-        'name' => $first->uploader->name ?? 'Tidak diketahui',
-        'count' => $group->count(),
-    ];
-})
-->sortByDesc('count')
-->mapWithKeys(
-    fn ($item) => [
-        $item['name'] => $item['count']
-    ]
-)
-->toArray();
-
-// Breakdown per STO mengikuti periode aktif.
-$stoBreakdown = $activeRows
-->filter(
-    fn ($row) =>
-        trim(
-            (string) ($row->sto ?? '')
-        ) !== ''
-)
-->groupBy(function ($row) {
-
-    return strtoupper(
-        trim(
-            (string) $row->sto
-        )
-    );
-
-})
-->map(
-    fn ($group) =>
-        $group->count()
-)
-->sortDesc()
-->toArray();
+    default =>
+        $daily[$currentKey]
+        ?? $makeSummary(),
+};
 
 $periodLabel = match ($range) {
-
     'harian' =>
-        $selectedDate
-            ? \Carbon\Carbon::parse(
-                $selectedDate
-            )->translatedFormat('d F Y')
-            : 'Semua tanggal',
+        \Carbon\Carbon::parse(
+            $selectedDate
+        )->translatedFormat('d F Y'),
 
     'tahunan' =>
         $selectedYear,
 
     default =>
-        $selectedMonthValue
-            ? \Carbon\Carbon::createFromFormat(
-                'Y-m',
-                $selectedMonthValue
-            )->translatedFormat('F Y')
-            : 'Semua bulan',
-
+        \Carbon\Carbon::createFromFormat(
+            'Y-m',
+            $selectedMonthValue
+        )->translatedFormat('F Y'),
 };
 
 $d = [
-
     'total' =>
-        $total,
+        (int) $current['total'],
 
     'resolved' =>
-        $resolved,
+        (int) $current['resolved'],
 
     'completed' =>
-        $completed,
+        (int) $current['completed'],
 
     'sto' =>
-        count($stoBreakdown),
+        (int) $current['sto'],
 
     'cancel' =>
-        $cancel,
+        (int) $current['cancel'],
 
     'eskalasi_dit' =>
-        $eskalasiDit,
+        (int) $current['eskalasi_dit'],
 
     'close' =>
-        $close,
+        (int) $current['close'],
 
     'uploaders' =>
-        $uploaders,
+        $current['uploaders'],
 
     'sto_breakdown' =>
-        $stoBreakdown,
+        $current['sto_breakdown'],
 
-    // Tetap sesuai kode sebelumnya karena kolom ini memang belum tersedia.
     'tipe_fallout' =>
         'Provisioning Failed',
 
     'sistem' =>
         'UIM / OSM / OSS',
-
 ];
 
 $eskalasi =
     max(
-        $d['total'] - $d['resolved'],
+        $d['total'] -
+        $d['resolved'],
         0
     );
 
 $resolvedPct =
     $d['total'] > 0
         ? round(
-            $d['resolved']
-            / $d['total']
-            * 100
+            $d['resolved'] /
+            $d['total'] *
+            100
         )
         : 0;
 
 $completedPct =
     $d['resolved'] > 0
         ? round(
-            $d['completed']
-            / $d['resolved']
-            * 100
+            $d['completed'] /
+            $d['resolved'] *
+            100
         )
         : 0;
 
 $chartId =
     'stoChart_' . $witelSlug;
 
-@endphp
+$showInitialLoader =
+    request()->query('range') === null
+    && request()->query('tanggal') === null
+    && request()->query('bulan') === null
+    && request()->query('tahun') === null;
 
+$clientSummary = [
+    'daily' => $daily,
+    'monthly' => $monthly,
+    'yearly' => $yearly,
+];
+@endphp
 
 <div class="tr-wrap">
 
-    {{-- Loading hanya di dalam halaman Total Rekap --}}
-    <div
-        class="tr-page-loading"
-        id="trPageLoading"
-        aria-live="polite"
-        aria-label="Memuat Total Rekap Fallout"
-    >
-        <div class="tr-page-loading-card">
-
-            <div class="tr-page-loading-logo">
-                <span>TF</span>
+    @if ($showInitialLoader)
+        <div
+            class="tr-page-loading"
+            id="trPageLoading"
+            aria-live="polite"
+            aria-label="Memuat Total Rekap Fallout"
+        >
+            <div class="tr-page-loading-card">
+                <div class="tr-page-loading-logo">TF</div>
+                <div class="tr-page-loading-spinner" aria-hidden="true"></div>
+                <div class="tr-page-loading-title">
+                    Memuat Total Rekap Fallout
+                </div>
+                <div class="tr-page-loading-subtitle">
+                    Menyiapkan data {{ $witel }}
+                </div>
             </div>
-
-            <div
-                class="tr-page-loading-spinner"
-                aria-hidden="true"
-            ></div>
-
-            <div class="tr-page-loading-title">
-                Memuat Total Rekap Fallout
-            </div>
-
-            <div class="tr-page-loading-subtitle">
-                Menyiapkan data {{ $witel }}
-            </div>
-
         </div>
-    </div>
+
+        <script>
+        (function () {
+            var loader =
+                document.getElementById('trPageLoading');
+
+            if (!loader) {
+                return;
+            }
+
+            /*
+             * Selama loading, overlay menangkap scroll/touch.
+             * Tidak ada lock html/body sehingga SPA tetap stabil.
+             */
+            var stopMove = function (event) {
+                event.preventDefault();
+            };
+
+            loader.addEventListener(
+                'wheel',
+                stopMove,
+                { passive: false }
+            );
+
+            loader.addEventListener(
+                'touchmove',
+                stopMove,
+                { passive: false }
+            );
+
+            /*
+             * Tutup sekali setelah 350 ms.
+             * Tidak ada fade kedua sehingga overlay tidak menggantung.
+             */
+            window.setTimeout(function () {
+                loader.classList.add('is-hidden');
+
+                loader.removeEventListener(
+                    'wheel',
+                    stopMove
+                );
+
+                loader.removeEventListener(
+                    'touchmove',
+                    stopMove
+                );
+
+                if (
+                    loader &&
+                    loader.parentNode
+                ) {
+                    loader.parentNode.removeChild(
+                        loader
+                    );
+                }
+            }, 350);
+        })();
+        </script>
+    @endif
 
 
-    <div class="tr-head">
+<div class="tr-head">
 
         <span class="tr-tag">
             {{ $witel }}
@@ -347,15 +539,13 @@ $chartId =
 
     </div>
 
-
     <div class="tr-tabs">
 
         <button
             type="button"
             class="tr-tab active"
             data-range="harian"
-            onclick="trSwitchRange(this, 'harian')"
-        >
+                    >
             Rekap Harian
         </button>
 
@@ -363,8 +553,7 @@ $chartId =
             type="button"
             class="tr-tab"
             data-range="bulanan"
-            onclick="trSwitchRange(this, 'bulanan')"
-        >
+                    >
             Rekap Bulanan
         </button>
 
@@ -372,13 +561,11 @@ $chartId =
             type="button"
             class="tr-tab"
             data-range="tahunan"
-            onclick="trSwitchRange(this, 'tahunan')"
-        >
+                    >
             Rekap Tahunan
         </button>
 
     </div>
-
 
     <div
         class="tr-filters"
@@ -395,13 +582,11 @@ $chartId =
                 type="date"
                 data-auto-filter="tanggal"
                 value="{{ $selectedDate }}"
-                onchange="trApplyFilter('tanggal', this.value)"
-            >
+                            >
 
         </div>
 
     </div>
-
 
     <div
         class="tr-filters"
@@ -417,8 +602,7 @@ $chartId =
 
             <select
                 data-auto-filter="bulan"
-                onchange="trApplyFilter('bulan', this.value)"
-            >
+                            >
 
                 @foreach ($monthValues as $monthValue => $monthLabel)
 
@@ -435,7 +619,6 @@ $chartId =
 
         </div>
 
-
         <div class="tr-field">
 
             <label>
@@ -444,8 +627,7 @@ $chartId =
 
             <select
                 data-auto-filter="tahun"
-                onchange="trApplyFilter('tahun', this.value)"
-            >
+                            >
 
                 @forelse ($availableYears as $year)
 
@@ -472,7 +654,6 @@ $chartId =
 
     </div>
 
-
     <div
         class="tr-filters"
         data-range-group="tahunan"
@@ -487,8 +668,7 @@ $chartId =
 
             <select
                 data-auto-filter="tahun"
-                onchange="trApplyFilter('tahun', this.value)"
-            >
+                            >
 
                 @forelse ($availableYears as $year)
 
@@ -512,7 +692,6 @@ $chartId =
         </div>
 
     </div>
-
 
     <div class="tr-stats">
 
@@ -553,16 +732,11 @@ $chartId =
 
             </div>
 
-            <div class="tr-stat-value">
-                {{ $d['total'] }}
-            </div>
+            <div class="tr-stat-value" data-tr-stat="total">{{ $d['total'] }}</div>
 
-            <div class="tr-stat-sub">
-                {{ $periodLabel }}
-            </div>
+            <div class="tr-stat-sub" data-tr-period>{{ $periodLabel }}</div>
 
         </div>
-
 
         <div class="tr-stat-card">
 
@@ -603,16 +777,11 @@ $chartId =
 
             </div>
 
-            <div class="tr-stat-value">
-                {{ $d['resolved'] }}
-            </div>
+            <div class="tr-stat-value" data-tr-stat="resolved">{{ $d['resolved'] }}</div>
 
-            <div class="tr-stat-sub">
-                {{ $eskalasi }} eskalasi
-            </div>
+            <div class="tr-stat-sub" data-tr-escalation>{{ $eskalasi }} eskalasi</div>
 
         </div>
-
 
         <div class="tr-stat-card">
 
@@ -652,16 +821,13 @@ $chartId =
 
             </div>
 
-            <div class="tr-stat-value">
-                {{ $d['completed'] }}
-            </div>
+            <div class="tr-stat-value" data-tr-stat="completed">{{ $d['completed'] }}</div>
 
             <div class="tr-stat-sub">
                 proses selesai
             </div>
 
         </div>
-
 
         <div class="tr-stat-card">
 
@@ -702,16 +868,13 @@ $chartId =
 
             </div>
 
-            <div class="tr-stat-value">
-                {{ $d['sto'] }}
-            </div>
+            <div class="tr-stat-value" data-tr-stat="sto">{{ $d['sto'] }}</div>
 
             <div class="tr-stat-sub">
                 titik STO tercatat
             </div>
 
         </div>
-
 
         <div class="tr-stat-card">
 
@@ -751,16 +914,13 @@ $chartId =
 
             </div>
 
-            <div class="tr-stat-value">
-                {{ $d['cancel'] }}
-            </div>
+            <div class="tr-stat-value" data-tr-stat="cancel">{{ $d['cancel'] }}</div>
 
             <div class="tr-stat-sub">
                 dibatalkan
             </div>
 
         </div>
-
 
         <div class="tr-stat-card">
 
@@ -793,16 +953,13 @@ $chartId =
 
             </div>
 
-            <div class="tr-stat-value">
-                {{ $d['eskalasi_dit'] }}
-            </div>
+            <div class="tr-stat-value" data-tr-stat="eskalasi_dit">{{ $d['eskalasi_dit'] }}</div>
 
             <div class="tr-stat-sub">
                 naik ke DIT
             </div>
 
         </div>
-
 
         <div class="tr-stat-card">
 
@@ -845,9 +1002,7 @@ $chartId =
 
             </div>
 
-            <div class="tr-stat-value">
-                {{ $d['close'] }}
-            </div>
+            <div class="tr-stat-value" data-tr-stat="close">{{ $d['close'] }}</div>
 
             <div class="tr-stat-sub">
                 tiket ditutup
@@ -856,7 +1011,6 @@ $chartId =
         </div>
 
     </div>
-
 
     <div class="tr-panels">
 
@@ -890,7 +1044,7 @@ $chartId =
                         stroke="#C8102E"
                         stroke-width="16"
                         fill="none"
-                        stroke-dasharray="{{ round(2 * 3.14159 * 60 * $resolvedPct / 100) }} 999"
+                        data-tr-donut="resolved" stroke-dasharray="{{ round(2 * 3.14159 * 60 * $resolvedPct / 100) }} 999"
                         stroke-linecap="round"
                         transform="rotate(-90 75 75)"
                     />
@@ -909,7 +1063,6 @@ $chartId =
 
                 </svg>
 
-
                 <div class="tr-legend">
 
                     <div>
@@ -918,7 +1071,7 @@ $chartId =
                             style="background:#C8102E"
                         ></span>
 
-                        Resolved ({{ $d['resolved'] }})
+                        Resolved (<span data-tr-legend="resolved">{{ $d['resolved'] }}</span>)
                     </div>
 
                     <div>
@@ -927,7 +1080,7 @@ $chartId =
                             style="background:#E7DEDD"
                         ></span>
 
-                        Eskalasi ({{ $eskalasi }})
+                        Eskalasi (<span data-tr-legend="escalation">{{ $eskalasi }}</span>)
                     </div>
 
                 </div>
@@ -935,7 +1088,6 @@ $chartId =
             </div>
 
         </div>
-
 
         <div class="tr-panel">
 
@@ -967,7 +1119,7 @@ $chartId =
                         stroke="#D9A441"
                         stroke-width="16"
                         fill="none"
-                        stroke-dasharray="{{ round(2 * 3.14159 * 60 * $completedPct / 100) }} 999"
+                        data-tr-donut="completed" stroke-dasharray="{{ round(2 * 3.14159 * 60 * $completedPct / 100) }} 999"
                         stroke-linecap="round"
                         transform="rotate(-90 75 75)"
                     />
@@ -986,7 +1138,6 @@ $chartId =
 
                 </svg>
 
-
                 <div class="tr-legend">
 
                     <div>
@@ -995,7 +1146,7 @@ $chartId =
                             style="background:#D9A441"
                         ></span>
 
-                        Completed ({{ $d['completed'] }})
+                        Completed (<span data-tr-legend="completed">{{ $d['completed'] }}</span>)
                     </div>
 
                     <div>
@@ -1006,7 +1157,7 @@ $chartId =
                         ></span>
 
                         Proses
-                        ({{ $d['resolved'] - $d['completed'] }})
+                        (<span data-tr-legend="process">{{ $d['resolved'] - $d['completed'] }}</span>)
 
                     </div>
 
@@ -1015,7 +1166,6 @@ $chartId =
             </div>
 
         </div>
-
 
         <div class="tr-panel tr-info">
 
@@ -1035,19 +1185,17 @@ $chartId =
 
             </div>
 
-
             <div class="tr-info-row">
 
                 <span>
                     Periode Aktif
                 </span>
 
-                <b>
+                <b data-tr-info="period">
                     {{ $periodLabel }}
                 </b>
 
             </div>
-
 
             <div class="tr-info-row">
 
@@ -1055,39 +1203,27 @@ $chartId =
                     Total Record
                 </span>
 
-                <b>
+                <b data-tr-info="total">
                     {{ $d['total'] }} data
                 </b>
 
             </div>
 
+            <div class="tr-info-sub" data-tr-uploader-label>
+                Upload ({{ $periodLabel }})
+            </div>
 
-            @if (!empty($d['uploaders']))
-
-                <div class="tr-info-sub">
-                    Upload ({{ $periodLabel }})
-                </div>
-
-                <div class="tr-uploader-chips">
-
-                    @foreach ($d['uploaders'] as $name => $count)
-
-                        <span class="tr-chip">
-
-                            {{ $name }}
-
-                            <b>
-                                {{ $count }}
-                            </b>
-
-                        </span>
-
-                    @endforeach
-
-                </div>
-
-            @endif
-
+            <div
+                class="tr-uploader-chips"
+                id="trUploaderChips"
+            >
+                @foreach ($d['uploaders'] as $name => $count)
+                    <span class="tr-chip">
+                        {{ $name }}
+                        <b>{{ $count }}</b>
+                    </span>
+                @endforeach
+            </div>
 
             <div class="tr-info-row">
 
@@ -1100,7 +1236,6 @@ $chartId =
                 </b>
 
             </div>
-
 
             <div class="tr-info-row">
 
@@ -1118,302 +1253,43 @@ $chartId =
 
     </div>
 
-
-    {{-- =========================================================
-         FALLOUT PER STO
-         BAGIAN DATA/LOGIC LAIN TETAP SAMA.
-         Hanya syntax JS diperbaiki agar Chart.js berjalan.
-         ========================================================= --}}
-
     @if (!empty($d['sto_breakdown']))
-
         <div class="tr-panel tr-bar-panel">
 
             <h3>
                 Fallout per STO
             </h3>
 
-            <div class="tr-chart-box">
+            <div
+                class="tr-chart-box"
+                id="trStoChart"
+                aria-label="Fallout per STO"
+            >
+                @php
+                    $maxSto = max($d['sto_breakdown']);
+                @endphp
 
-                <canvas
-                    id="{{ $chartId }}"
-                ></canvas>
+                @foreach ($d['sto_breakdown'] as $stoName => $stoTotal)
+                    <div class="tr-bar-row">
+                        <div class="tr-bar-label">
+                            <span>{{ $stoName }}</span>
+                            <b>{{ $stoTotal }}</b>
+                        </div>
 
+                        <div class="tr-bar-track">
+                            <div
+                                class="tr-bar-fill"
+                                style="width: {{ $maxSto > 0 ? round($stoTotal / $maxSto * 100, 2) : 0 }}%;"
+                            ></div>
+                        </div>
+                    </div>
+                @endforeach
             </div>
 
         </div>
-
-
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-
-
-        <script>
-        (function () {
-
-            const canvas =
-                document.getElementById(
-                    '{{ $chartId }}'
-                );
-
-
-            if (!canvas) {
-                return;
-            }
-
-
-            function renderStoChart() {
-
-                if (
-                    typeof Chart === 'undefined'
-                ) {
-                    return;
-                }
-
-
-                const existingChart =
-                    Chart.getChart(canvas);
-
-
-                if (existingChart) {
-
-                    existingChart.destroy();
-
-                }
-
-
-                new Chart(
-                    canvas,
-                    {
-
-                        type: 'bar',
-
-                        data: {
-
-                            labels:
-                                @json(
-                                    array_keys(
-                                        $d['sto_breakdown']
-                                    )
-                                ),
-
-                            datasets: [
-
-                                {
-
-                                    label:
-                                        'Jumlah Fallout',
-
-                                    data:
-                                        @json(
-                                            array_values(
-                                                $d['sto_breakdown']
-                                            )
-                                        ),
-
-                                    backgroundColor:
-                                        '#8A0F26',
-
-                                    borderRadius:
-                                        6,
-
-                                    maxBarThickness:
-                                        46,
-
-                                }
-
-                            ]
-
-                        },
-
-                        options: {
-
-                            responsive:
-                                true,
-
-                            maintainAspectRatio:
-                                false,
-
-                            plugins: {
-
-                                legend: {
-
-                                    display:
-                                        false
-
-                                },
-
-                                tooltip: {
-
-                                    backgroundColor:
-                                        '#ffffff',
-
-                                    titleColor:
-                                        '#20161A',
-
-                                    titleFont: {
-
-                                        weight:
-                                            '700'
-
-                                    },
-
-                                    bodyColor:
-                                        '#C8102E',
-
-                                    bodyFont: {
-
-                                        weight:
-                                            '600'
-
-                                    },
-
-                                    borderColor:
-                                        '#E7DEDD',
-
-                                    borderWidth:
-                                        1,
-
-                                    padding:
-                                        12,
-
-                                    displayColors:
-                                        false,
-
-                                    callbacks: {
-
-                                        title:
-                                            function (items) {
-
-                                                return items[0]
-                                                    .label;
-
-                                            },
-
-                                        label:
-                                            function (item) {
-
-                                                return (
-                                                    'Jumlah Fallout : '
-                                                    +
-                                                    item.formattedValue
-                                                );
-
-                                            }
-
-                                    }
-
-                                }
-
-                            },
-
-                            scales: {
-
-                                y: {
-
-                                    beginAtZero:
-                                        true,
-
-                                    ticks: {
-
-                                        stepSize:
-                                            1,
-
-                                        precision:
-                                            0
-
-                                    },
-
-                                    grid: {
-
-                                        color:
-                                            '#E7DEDD'
-
-                                    }
-
-                                },
-
-                                x: {
-
-                                    grid: {
-
-                                        display:
-                                            false
-
-                                    }
-
-                                }
-
-                            }
-
-                        }
-
-                    }
-                );
-
-            }
-
-
-            /*
-             * Tunggu Chart.js selesai dimuat.
-             * Ini aman ketika halaman Total Rekap
-             * dimuat sebagai bagian dari dashboard.
-             */
-
-            if (
-                typeof Chart !== 'undefined'
-            ) {
-
-                renderStoChart();
-
-            } else {
-
-                let attempts =
-                    0;
-
-
-                const waitChart =
-                    setInterval(
-                        function () {
-
-                            attempts++;
-
-
-                            if (
-                                typeof Chart !== 'undefined'
-                            ) {
-
-                                clearInterval(
-                                    waitChart
-                                );
-
-                                renderStoChart();
-
-                            }
-
-
-                            if (
-                                attempts >= 50
-                            ) {
-
-                                clearInterval(
-                                    waitChart
-                                );
-
-                            }
-
-                        },
-                        100
-                    );
-
-            }
-
-        })();
-        </script>
-
     @endif
 
 </div>
-
 
 <style>
 
@@ -1434,86 +1310,6 @@ $chartId =
     box-sizing:
         border-box;
 }
-
-
-/* Loading hanya menutupi area Total Rekap, bukan dashboard/sidebar */
-
-.tr-page-loading {
-
-    pointer-events:
-        auto;
-
-    cursor:
-        none;
-
-    user-select:
-        none;
-
-    overflow:
-        hidden;
-
-    position:
-        absolute;
-
-    inset:
-        0;
-
-    z-index:
-        99999;
-
-    display:
-        flex;
-
-    align-items:
-        center;
-
-    justify-content:
-        center;
-
-    padding:
-        28px;
-
-    background:
-        rgba(
-            250,
-            247,
-            247,
-            .94
-        );
-
-    backdrop-filter:
-        blur(
-            8px
-        );
-
-    -webkit-backdrop-filter:
-        blur(
-            8px
-        );
-
-    border-radius:
-        22px;
-
-    transition:
-        opacity .28s ease,
-        visibility .28s ease;
-
-}
-
-
-.tr-page-loading.is-hidden {
-
-    opacity:
-        0;
-
-    visibility:
-        hidden;
-
-    pointer-events:
-        none;
-
-}
-
 
 .tr-page-loading-card {
 
@@ -1561,7 +1357,6 @@ $chartId =
         );
 
 }
-
 
 .tr-page-loading-logo {
 
@@ -1619,7 +1414,6 @@ $chartId =
 
 }
 
-
 .tr-page-loading-spinner {
 
     width:
@@ -1657,7 +1451,6 @@ $chartId =
 
 }
 
-
 .tr-page-loading-title {
 
     font-family:
@@ -1674,7 +1467,6 @@ $chartId =
         #20161A;
 
 }
-
 
 .tr-page-loading-subtitle {
 
@@ -1696,7 +1488,6 @@ $chartId =
 
 }
 
-
 @keyframes trPageLoadingSpin {
 
     to {
@@ -1710,14 +1501,12 @@ $chartId =
 
 }
 
-
 .tr-head {
 
     margin-bottom:
         22px;
 
 }
-
 
 .tr-tag {
 
@@ -1755,7 +1544,6 @@ $chartId =
 
 }
 
-
 .tr-head h2 {
 
     font-family:
@@ -1773,7 +1561,6 @@ $chartId =
 
 }
 
-
 .tr-head p {
 
     margin-top:
@@ -1786,7 +1573,6 @@ $chartId =
         #7A6B6F;
 
 }
-
 
 .tr-tabs {
 
@@ -1824,7 +1610,6 @@ $chartId =
 
 }
 
-
 .tr-tab {
 
     border:
@@ -1857,7 +1642,6 @@ $chartId =
 
 }
 
-
 .tr-tab.active {
 
     background:
@@ -1867,7 +1651,6 @@ $chartId =
         #fff;
 
 }
-
 
 .tr-filters {
 
@@ -1881,7 +1664,6 @@ $chartId =
         22px;
 
 }
-
 
 .tr-field label {
 
@@ -1901,7 +1683,6 @@ $chartId =
         6px;
 
 }
-
 
 .tr-field select,
 .tr-field input[type="date"] {
@@ -1934,7 +1715,6 @@ $chartId =
 
 }
 
-
 .tr-stats {
 
     display:
@@ -1956,7 +1736,6 @@ $chartId =
         22px;
 
 }
-
 
 .tr-stat-card {
 
@@ -1985,7 +1764,6 @@ $chartId =
 
 }
 
-
 .tr-stat-top {
 
     display:
@@ -1999,7 +1777,6 @@ $chartId =
 
 }
 
-
 .tr-stat-label {
 
     font-size:
@@ -2012,7 +1789,6 @@ $chartId =
         600;
 
 }
-
 
 .tr-stat-icon {
 
@@ -2041,7 +1817,6 @@ $chartId =
 
 }
 
-
 .tr-stat-value {
 
     font-family:
@@ -2062,7 +1837,6 @@ $chartId =
 
 }
 
-
 .tr-stat-sub {
 
     font-size:
@@ -2075,7 +1849,6 @@ $chartId =
         4px;
 
 }
-
 
 .tr-panels {
 
@@ -2095,7 +1868,6 @@ $chartId =
         start;
 
 }
-
 
 .tr-panel {
 
@@ -2124,7 +1896,6 @@ $chartId =
 
 }
 
-
 .tr-panel h3 {
 
     font-family:
@@ -2145,7 +1916,6 @@ $chartId =
 
 }
 
-
 .tr-donut-wrap {
 
     display:
@@ -2162,7 +1932,6 @@ $chartId =
 
 }
 
-
 .tr-legend {
 
     font-size:
@@ -2175,7 +1944,6 @@ $chartId =
         100%;
 
 }
-
 
 .tr-legend div {
 
@@ -2192,7 +1960,6 @@ $chartId =
         4px 0;
 
 }
-
 
 .tr-legend .dot {
 
@@ -2212,7 +1979,6 @@ $chartId =
         inline-block;
 
 }
-
 
 .tr-info-row {
 
@@ -2240,14 +2006,12 @@ $chartId =
 
 }
 
-
 .tr-info-row:last-child {
 
     border-bottom:
         none;
 
 }
-
 
 .tr-info-row b {
 
@@ -2258,7 +2022,6 @@ $chartId =
         12.5px;
 
 }
-
 
 .tr-info-sub {
 
@@ -2285,7 +2048,6 @@ $chartId =
 
 }
 
-
 .tr-uploader-chips {
 
     display:
@@ -2308,7 +2070,6 @@ $chartId =
         2px;
 
 }
-
 
 .tr-chip {
 
@@ -2346,7 +2107,6 @@ $chartId =
 
 }
 
-
 .tr-chip b {
 
     color:
@@ -2356,7 +2116,6 @@ $chartId =
         700;
 
 }
-
 
 /* =========================================================
    CHART
@@ -2371,7 +2130,6 @@ $chartId =
         12px;
 
 }
-
 
 .tr-chart-box {
 
@@ -2389,7 +2147,6 @@ $chartId =
 
 }
 
-
 @media (max-width: 980px) {
 
     .tr-panels {
@@ -2401,450 +2158,690 @@ $chartId =
 
 }
 
-
-/* FULL PAGE LOADING LOCK — hanya halaman ini, tanpa menyentuh dashboard/sidebar */
-
-html.trLoadingLock,
-body.trLoadingLock {
-
-    overflow:
-        hidden !important;
-
-    cursor:
-        none !important;
-
+ .tr-page-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 999999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+    overflow: hidden;
+    user-select: none;
+    pointer-events: auto;
+    touch-action: none;
+    overscroll-behavior: none;
+    cursor: none;
+    background: rgba(250,247,247,.97);
+    border-radius: 22px;
 }
-
-
-body.trLoadingLock *,
-html.trLoadingLock * {
-
-    cursor:
-        none !important;
-
-}
-
-
-.tr-wrap.trLoadingLock {
-
-    overflow:
-        hidden !important;
-
-    cursor:
-        none !important;
-
-}
-
 
 .tr-page-loading.is-hidden {
+    display: none !important;
+}
 
-    cursor:
-        none !important;
+.tr-page-loading-card {
+    width: min(300px, 100%);
+    padding: 24px 22px;
+    text-align: center;
+    border: 1px solid rgba(255,255,255,.9);
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 18px 45px -28px rgba(58,4,16,.24);
+    cursor: none;
+}
 
+.tr-page-loading-logo {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 12px;
+    display: grid;
+    place-items: center;
+    border-radius: 13px;
+    background: linear-gradient(145deg,#C8102E,#8A0F26);
+    color: #fff;
+    font: 700 16px/1 "Space Grotesk",sans-serif;
+    cursor: none;
+}
+
+.tr-page-loading-spinner {
+    width: 28px;
+    height: 28px;
+    margin: 0 auto 12px;
+    border: 3px solid rgba(200,16,46,.14);
+    border-top-color: #C8102E;
+    border-right-color: #8A0F26;
+    border-radius: 50%;
+    animation: trPageLoadingSpin .72s linear infinite;
+}
+
+.tr-page-loading-title {
+    font: 700 14px/1.25 "Space Grotesk",sans-serif;
+    color: #20161A;
+    cursor: none;
+}
+
+.tr-page-loading-subtitle {
+    margin-top: 5px;
+    font: 11px/1.5 "Inter",sans-serif;
+    color: #817377;
+    cursor: none;
+}
+
+@keyframes trPageLoadingSpin {
+    to { transform: rotate(360deg); }
+}
+
+
+.tr-bar-row {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.tr-bar-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11.5px;
+    color: #514347;
+}
+
+.tr-bar-label b {
+    color: #20161A;
+}
+
+.tr-bar-track {
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #EEE7E6;
+}
+
+.tr-bar-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: #8A0F26;
+    transition: width .14s ease;
 }
 
 </style>
 
-
 <script>
+(function () {
+    var wrap = document.querySelector('.tr-wrap');
 
-// ============================================================
-// FULL LOADING LOCK — seperti Edit Data: seluruh area halaman
-// tertutup, scrollbar dikunci, dan cursor disembunyikan 1 detik.
-// ============================================================
-
-(function() {
-
-    const pageLoading =
-        document.getElementById(
-            'trPageLoading'
-        );
-
-    const pageWrap =
-        document.querySelector(
-            '.tr-wrap'
-        );
-
-    const lockClass =
-        'trLoadingLock';
-
-    const lockedNodes =
-        [];
-
-
-    if (
-        !pageLoading ||
-        !pageWrap
-    ) {
+    if (!wrap) {
         return;
     }
 
+    var payload = @json($clientSummary);
+    var range = @json($range);
 
-    function lockScrollableParents() {
+    var selectedDate = @json($selectedDate);
+    var selectedMonth = @json($selectedMonth);
+    var selectedYear = @json($selectedYear);
 
-        let node =
-            pageWrap;
+    var statMap = {};
+    wrap.querySelectorAll('[data-tr-stat]').forEach(function (el) {
+        statMap[el.dataset.trStat] = el;
+    });
 
+    var legendMap = {};
+    wrap.querySelectorAll('[data-tr-legend]').forEach(function (el) {
+        legendMap[el.dataset.trLegend] = el;
+    });
 
-        while (node) {
+    var donutMap = {};
+    wrap.querySelectorAll('[data-tr-donut]').forEach(function (el) {
+        donutMap[el.dataset.trDonut] = el;
+    });
 
-            const style =
-                window.getComputedStyle(
-                    node
-                );
+    var infoPeriod =
+        wrap.querySelector('[data-tr-info="period"]');
 
+    var infoTotal =
+        wrap.querySelector('[data-tr-info="total"]');
 
-            const canScrollY =
-                [
-                    'auto',
-                    'scroll',
-                    'overlay'
-                ].includes(
-                    style.overflowY
-                )
-                ||
-                node.scrollHeight >
-                node.clientHeight + 1;
+    var periodSub =
+        wrap.querySelector('[data-tr-period]');
 
+    var escalationSub =
+        wrap.querySelector('[data-tr-escalation]');
 
-            const canScrollX =
-                [
-                    'auto',
-                    'scroll',
-                    'overlay'
-                ].includes(
-                    style.overflowX
-                )
-                ||
-                node.scrollWidth >
-                node.clientWidth + 1;
+    var uploaderLabel =
+        wrap.querySelector('[data-tr-uploader-label]');
 
+    var uploaderBox =
+        wrap.querySelector('#trUploaderChips');
 
-            if (
-                canScrollY ||
-                canScrollX
-            ) {
+    var chartBox =
+        wrap.querySelector('#trStoChart');
 
-                lockedNodes.push({
+    var dateField =
+        wrap.querySelector('[data-auto-filter="tanggal"]');
 
-                    node,
+    var monthField =
+        wrap.querySelector('[data-auto-filter="bulan"]');
 
-                    overflow:
-                        node.style.overflow,
+    var yearFields =
+        wrap.querySelectorAll('[data-auto-filter="tahun"]');
 
-                    overflowY:
-                        node.style.overflowY,
+    var tabs =
+        wrap.querySelectorAll('.tr-tab');
 
-                    overflowX:
-                        node.style.overflowX,
+    var groups =
+        wrap.querySelectorAll('[data-range-group]');
 
-                });
+    function emptyData() {
+        return {
+            total: 0,
+            resolved: 0,
+            completed: 0,
+            cancel: 0,
+            eskalasi_dit: 0,
+            close: 0,
+            sto: 0,
+            sto_breakdown: {},
+            uploaders: {}
+        };
+    }
 
-
-                node.style.setProperty(
-                    'overflow',
-                    'hidden',
-                    'important'
-                );
-
-
-                node.style.setProperty(
-                    'overflow-y',
-                    'hidden',
-                    'important'
-                );
-
-
-                node.style.setProperty(
-                    'overflow-x',
-                    'hidden',
-                    'important'
-                );
-
-            }
-
-
-            if (
-                node ===
-                document.body
-            ) {
-                break;
-            }
-
-
-            node =
-                node.parentElement;
-
+    function getData() {
+        if (range === 'tahunan') {
+            return payload.yearly[selectedYear]
+                || emptyData();
         }
 
+        if (range === 'bulanan') {
+            var monthKey =
+                selectedYear + '-' +
+                String(selectedMonth).padStart(2, '0');
+
+            return payload.monthly[monthKey]
+                || emptyData();
+        }
+
+        return payload.daily[selectedDate]
+            || emptyData();
     }
 
+    function getLabel() {
+        var value;
+        var options;
 
-    function unlockScrollableParents() {
+        if (range === 'tahunan') {
+            value = selectedYear + '-01-01';
 
-        lockedNodes
-            .reverse()
-            .forEach(
-                function(item) {
+            options = {
+                year: 'numeric'
+            };
+        } else if (range === 'bulanan') {
+            value =
+                selectedYear + '-' +
+                String(selectedMonth).padStart(2, '0') +
+                '-01';
 
-                    item.node.style.overflow =
-                        item.overflow;
+            options = {
+                month: 'long',
+                year: 'numeric'
+            };
+        } else {
+            value = selectedDate;
 
-                    item.node.style.overflowY =
-                        item.overflowY;
+            options = {
+                day: '2-digit',
+                month: 'long',
+                year: 'numeric'
+            };
+        }
 
-                    item.node.style.overflowX =
-                        item.overflowX;
+        return new Date(
+            value + 'T00:00:00'
+        ).toLocaleDateString(
+            'id-ID',
+            options
+        );
+    }
 
-                }
+    function updateUrl() {
+        var url =
+            new URL(window.location.href);
+
+        url.searchParams.set(
+            'range',
+            range
+        );
+
+        url.searchParams.delete('tanggal');
+        url.searchParams.delete('bulan');
+        url.searchParams.delete('tahun');
+
+        if (range === 'harian') {
+            url.searchParams.set(
+                'tanggal',
+                selectedDate
+            );
+        }
+
+        if (range === 'bulanan') {
+            url.searchParams.set(
+                'bulan',
+                String(selectedMonth).padStart(2, '0')
             );
 
-    }
-
-
-    document.documentElement.classList.add(
-        lockClass
-    );
-
-
-    document.body.classList.add(
-        lockClass
-    );
-
-
-    pageWrap.classList.add(
-        lockClass
-    );
-
-
-    pageLoading.style.cursor =
-        'none';
-
-
-    lockScrollableParents();
-
-
-    setTimeout(
-        function() {
-
-            unlockScrollableParents();
-
-
-            pageWrap.classList.remove(
-                lockClass
+            url.searchParams.set(
+                'tahun',
+                selectedYear
             );
+        }
 
-
-            document.documentElement.classList.remove(
-                lockClass
+        if (range === 'tahunan') {
+            url.searchParams.set(
+                'tahun',
+                selectedYear
             );
+        }
 
-
-            document.body.classList.remove(
-                lockClass
-            );
-
-
-            pageLoading.classList.add(
-                'is-hidden'
-            );
-
-        },
-        1000
-    );
-
-})();
-
-
-function trSwitchRange(
-    btn,
-    range
-) {
-
-    const url =
-        new URL(
-            window.location.href
+        /*
+         * Penting:
+         * replaceState hanya mengubah URL.
+         * Tidak ada fetch/reload/request baru.
+         */
+        window.history.replaceState(
+            {},
+            '',
+            url.toString()
         );
-
-
-    // Tab menentukan periode yang tampil. Saat berpindah tab,
-    // periode lama dibersihkan agar tab baru otomatis memakai
-    // periode TERBARU yang tersedia di database.
-
-    url.searchParams.set(
-        'range',
-        range
-    );
-
-
-    if (
-        range === 'harian'
-    ) {
-
-        url.searchParams.delete(
-            'bulan'
-        );
-
-        url.searchParams.delete(
-            'tahun'
-        );
-
-    }
-    else if (
-        range === 'bulanan'
-    ) {
-
-        url.searchParams.delete(
-            'tanggal'
-        );
-
-    }
-    else if (
-        range === 'tahunan'
-    ) {
-
-        url.searchParams.delete(
-            'tanggal'
-        );
-
-        url.searchParams.delete(
-            'bulan'
-        );
-
     }
 
-
-    window.location.href =
-        url.toString();
-
-}
-
-
-function trApplyFilter(
-    type,
-    value
-) {
-
-    const url =
-        new URL(
-            window.location.href
-        );
-
-
-    const range =
-        url.searchParams.get(
-            'range'
-        )
-        ||
-        'bulanan';
-
-
-    url.searchParams.set(
-        'range',
-        range
-    );
-
-
-    url.searchParams.set(
-        type,
-        value
-    );
-
-
-    if (
-        range === 'harian'
+    function updateDonut(
+        circle,
+        percentage
     ) {
-
-        url.searchParams.delete(
-            'bulan'
-        );
-
-        url.searchParams.delete(
-            'tahun'
-        );
-
-    }
-    else if (
-        range === 'bulanan'
-    ) {
-
-        url.searchParams.delete(
-            'tanggal'
-        );
-
-    }
-    else if (
-        range === 'tahunan'
-    ) {
-
-        url.searchParams.delete(
-            'tanggal'
-        );
-
-        url.searchParams.delete(
-            'bulan'
-        );
-
-    }
-
-
-    window.location.href =
-        url.toString();
-
-}
-
-
-document.addEventListener(
-    'DOMContentLoaded',
-    function() {
-
-        const range =
-            @json($range);
-
-
-        const wrap =
-            document.querySelector(
-                '.tr-wrap'
-            );
-
-
-        if (!wrap) {
+        if (!circle) {
             return;
         }
 
+        var circumference =
+            2 * Math.PI * 60;
 
-        wrap
-            .querySelectorAll(
-                '.tr-tab'
-            )
-            .forEach(
-                function(tab) {
-
-                    tab.classList.toggle(
-                        'active',
-                        tab.dataset.range === range
-                    );
-
-                }
-            );
-
-
-        wrap
-            .querySelectorAll(
-                '[data-range-group]'
-            )
-            .forEach(
-                function(group) {
-
-                    group.style.display =
-                        group.dataset.rangeGroup === range
-                            ? 'flex'
-                            : 'none';
-
-                }
-            );
-
+        circle.setAttribute(
+            'stroke-dasharray',
+            (
+                circumference *
+                percentage /
+                100
+            ).toFixed(2) + ' 999'
+        );
     }
-);
 
+    function renderUploaders(data) {
+        if (!uploaderBox) {
+            return;
+        }
+
+        uploaderBox.innerHTML = '';
+
+        var entries =
+            Object.entries(
+                data.uploaders || {}
+            );
+
+        if (uploaderLabel) {
+            uploaderLabel.style.display =
+                entries.length ? '' : 'none';
+        }
+
+        uploaderBox.style.display =
+            entries.length ? '' : 'none';
+
+        entries.forEach(function (entry) {
+            var chip =
+                document.createElement('span');
+
+            chip.className = 'tr-chip';
+
+            chip.appendChild(
+                document.createTextNode(
+                    entry[0] + ' '
+                )
+            );
+
+            var count =
+                document.createElement('b');
+
+            count.textContent =
+                entry[1];
+
+            chip.appendChild(count);
+            uploaderBox.appendChild(chip);
+        });
+    }
+
+    function renderBars(data) {
+        if (!chartBox) {
+            return;
+        }
+
+        chartBox.innerHTML = '';
+
+        var entries =
+            Object.entries(
+                data.sto_breakdown || {}
+            );
+
+        if (!entries.length) {
+            return;
+        }
+
+        var maxValue =
+            Math.max.apply(
+                null,
+                entries.map(function (entry) {
+                    return Number(entry[1]) || 0;
+                })
+            );
+
+        entries.forEach(function (entry) {
+            var row =
+                document.createElement('div');
+
+            row.className =
+                'tr-bar-row';
+
+            var label =
+                document.createElement('div');
+
+            label.className =
+                'tr-bar-label';
+
+            var name =
+                document.createElement('span');
+
+            name.textContent =
+                entry[0];
+
+            var count =
+                document.createElement('b');
+
+            count.textContent =
+                entry[1];
+
+            label.appendChild(name);
+            label.appendChild(count);
+
+            var track =
+                document.createElement('div');
+
+            track.className =
+                'tr-bar-track';
+
+            var fill =
+                document.createElement('div');
+
+            fill.className =
+                'tr-bar-fill';
+
+            fill.style.width =
+                (
+                    maxValue > 0
+                        ? Number(entry[1]) /
+                            maxValue * 100
+                        : 0
+                ).toFixed(2) + '%';
+
+            track.appendChild(fill);
+            row.appendChild(label);
+            row.appendChild(track);
+            chartBox.appendChild(row);
+        });
+    }
+
+    function render() {
+        var data = getData();
+
+        var escalation =
+            Math.max(
+                Number(data.total || 0) -
+                Number(data.resolved || 0),
+                0
+            );
+
+        var resolvedPct =
+            data.total > 0
+                ? Math.round(
+                    data.resolved /
+                    data.total *
+                    100
+                )
+                : 0;
+
+        var completedPct =
+            data.resolved > 0
+                ? Math.round(
+                    data.completed /
+                    data.resolved *
+                    100
+                )
+                : 0;
+
+        Object.keys(statMap).forEach(
+            function (key) {
+                statMap[key].textContent =
+                    data[key] || 0;
+            }
+        );
+
+        var activeLabel =
+            getLabel();
+
+        if (periodSub) {
+            periodSub.textContent =
+                activeLabel;
+        }
+
+        if (infoPeriod) {
+            infoPeriod.textContent =
+                activeLabel;
+        }
+
+        if (infoTotal) {
+            infoTotal.textContent =
+                (data.total || 0) +
+                ' data';
+        }
+
+        if (escalationSub) {
+            escalationSub.textContent =
+                escalation +
+                ' eskalasi';
+        }
+
+        if (legendMap.resolved) {
+            legendMap.resolved.textContent =
+                data.resolved || 0;
+        }
+
+        if (legendMap.escalation) {
+            legendMap.escalation.textContent =
+                escalation;
+        }
+
+        if (legendMap.completed) {
+            legendMap.completed.textContent =
+                data.completed || 0;
+        }
+
+        if (legendMap.process) {
+            legendMap.process.textContent =
+                Math.max(
+                    (data.resolved || 0) -
+                    (data.completed || 0),
+                    0
+                );
+        }
+
+        updateDonut(
+            donutMap.resolved,
+            resolvedPct
+        );
+
+        updateDonut(
+            donutMap.completed,
+            completedPct
+        );
+
+        renderUploaders(data);
+        renderBars(data);
+
+        tabs.forEach(function (tab) {
+            tab.classList.toggle(
+                'active',
+                tab.dataset.range === range
+            );
+        });
+
+        groups.forEach(function (group) {
+            group.style.display =
+                group.dataset.rangeGroup === range
+                    ? 'flex'
+                    : 'none';
+        });
+    }
+
+    tabs.forEach(function (tab) {
+        tab.addEventListener(
+            'click',
+            function () {
+                var nextRange =
+                    this.dataset.range;
+
+                if (
+                    !nextRange ||
+                    nextRange === range
+                ) {
+                    return;
+                }
+
+                range = nextRange;
+
+                if (range === 'harian') {
+                    var days =
+                        Object.keys(
+                            payload.daily
+                        );
+
+                    if (days.length) {
+                        selectedDate = days[0];
+
+                        if (dateField) {
+                            dateField.value =
+                                selectedDate;
+                        }
+                    }
+                }
+
+                if (range === 'bulanan') {
+                    var months =
+                        Object.keys(
+                            payload.monthly
+                        );
+
+                    if (months.length) {
+                        var monthKey =
+                            months[0];
+
+                        selectedYear =
+                            monthKey.slice(0, 4);
+
+                        selectedMonth =
+                            monthKey.slice(5, 7);
+
+                        if (monthField) {
+                            monthField.value =
+                                selectedMonth;
+                        }
+                    }
+                }
+
+                if (range === 'tahunan') {
+                    var years =
+                        Object.keys(
+                            payload.yearly
+                        );
+
+                    if (years.length) {
+                        selectedYear =
+                            years[0];
+                    }
+                }
+
+                updateUrl();
+                render();
+            }
+        );
+    });
+
+    if (dateField) {
+        dateField.addEventListener(
+            'change',
+            function () {
+                if (!this.value) {
+                    return;
+                }
+
+                selectedDate =
+                    this.value;
+
+                range = 'harian';
+
+                updateUrl();
+                render();
+            }
+        );
+    }
+
+    if (monthField) {
+        monthField.addEventListener(
+            'change',
+            function () {
+                if (!this.value) {
+                    return;
+                }
+
+                selectedMonth =
+                    this.value;
+
+                range = 'bulanan';
+
+                updateUrl();
+                render();
+            }
+        );
+    }
+
+    yearFields.forEach(
+        function (field) {
+            field.addEventListener(
+                'change',
+                function () {
+                    if (!this.value) {
+                        return;
+                    }
+
+                    selectedYear =
+                        this.value;
+
+                    updateUrl();
+                    render();
+                }
+            );
+        }
+    );
+
+    render();
+})();
 </script>
