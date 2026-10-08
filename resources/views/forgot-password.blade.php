@@ -261,8 +261,10 @@
     .switch-line{font-size:12px; line-height:1.5;}
   }
 </style>
+<script src="{{ asset('js/tf-navigation.js') }}" defer></script>
+
 </head>
-<body>
+<body data-tf-nav="public">
 
   <section class="brand-panel">
     <div class="brand-photo"></div>

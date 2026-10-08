@@ -11,6 +11,8 @@
 
     <title>Telkom Fallout System</title>
 
+    <link rel="icon" type="image/png" href="{{ asset('images/image.png') }}">
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
 
     <link
@@ -795,10 +797,12 @@
         }
 
     </style>
+
+<script src="{{ asset('js/tf-navigation.js') }}" defer></script>
 </head>
 
 
-<body>
+<body data-tf-nav="public">
 
 <div class="welcome-page">
 

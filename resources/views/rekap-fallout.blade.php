@@ -98,15 +98,13 @@
 
 <meta charset="UTF-8">
 
-<meta
-    name="viewport"
-    content="width=1280"
->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
 <title>
     Telkom Fallout System — Data Rekap Fallout
 </title>
 
+<link rel="icon" type="image/png" href="{{ asset('images/image.png') }}">
 
 <link
     rel="preconnect"
@@ -169,7 +167,7 @@
 html,
 body{
     height:100%;
-    min-width:1180px;
+    min-width:0;
 }
 
 
@@ -2068,10 +2066,12 @@ footer .brand{
 
 </style>
 
+
+<script src="{{ asset('js/tf-navigation.js') }}" defer></script>
 </head>
 
 
-<body>
+<body data-tf-nav="public">
 
 <!-- ============================================================
      LOADING PAGE
@@ -4736,7 +4736,7 @@ function rfTableWitelChanged(form, value){
     if (!loader) return;
 
     const startedAt = Date.now();
-    const minVisible = 1800;
+    const minVisible = 250;
 
     function hideLoader(){
         const wait = Math.max(minVisible - (Date.now() - startedAt), 0);

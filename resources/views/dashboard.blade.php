@@ -916,117 +916,8 @@
 
 
 
-        /* =====================================================
-           PAGE LOADING (satu overlay untuk semua menu)
-           Overlay berada di .content-shell dan menutup
-           seluruh area .content (termasuk padding-nya).
-           ===================================================== */
+        /* PAGE LOADING dashboard sengaja dihapus. Loading ditangani oleh partial masing-masing. */
 
-        /* Mencegah layout bergeser saat scrollbar dikunci / dibuka */
-        html{
-            scrollbar-gutter:stable;
-        }
-
-        html.page-loading-lock{
-            overflow:hidden;
-        }
-
-        .content-shell{
-            position:relative;
-            isolation:isolate;
-            flex:1 1 auto;
-            display:flex;
-            flex-direction:column;
-            min-width:0;
-            min-height:0;
-            width:100%;
-        }
-
-        .content-shell.is-loading{
-            min-height:380px;
-        }
-
-        .content-shell > .content{
-            flex:1 1 auto;
-        }
-
-        .page-loading{
-            position:absolute;
-            inset:0;
-            z-index:50;
-            display:block;
-            padding:max(40px, calc(50vh - 200px)) 20px 20px;
-            background:rgba(250,247,247,.96);
-            backdrop-filter:blur(8px);
-            -webkit-backdrop-filter:blur(8px);
-            border-radius:22px;
-            transition:opacity .28s ease, visibility .28s ease;
-        }
-
-        .page-loading.is-hidden{
-            opacity:0;
-            visibility:hidden;
-            pointer-events:none;
-        }
-
-        .page-loading-card{
-            position:sticky;
-            top:calc(50vh - 130px);
-            width:min(320px, 100%);
-            margin:0 auto;
-            padding:28px 24px 24px;
-            text-align:center;
-            border:1px solid rgba(255,255,255,.9);
-            border-radius:18px;
-            background:rgba(255,255,255,.9);
-            box-shadow:0 24px 60px -30px rgba(58,4,16,.30);
-        }
-
-        .page-loading-logo{
-            width:52px;
-            height:52px;
-            margin:0 auto 14px;
-            display:grid;
-            place-items:center;
-            border-radius:14px;
-            background:linear-gradient(145deg,#C8102E,#8A0F26);
-            color:#fff;
-            font-family:'Space Grotesk',sans-serif;
-            font-size:17px;
-            font-weight:700;
-            letter-spacing:.03em;
-            box-shadow:0 12px 24px -12px rgba(200,16,46,.75);
-        }
-
-        .page-loading-spinner{
-            width:30px;
-            height:30px;
-            margin:0 auto 14px;
-            border:3px solid rgba(200,16,46,.14);
-            border-top-color:#C8102E;
-            border-right-color:#8A0F26;
-            border-radius:50%;
-            animation:pageLoadingSpin .8s linear infinite;
-        }
-
-        .page-loading-title{
-            font-family:'Space Grotesk',sans-serif;
-            font-size:14px;
-            font-weight:700;
-            color:#20161A;
-        }
-
-        .page-loading-subtitle{
-            margin-top:5px;
-            font-family:'Inter',sans-serif;
-            font-size:11px;
-            line-height:1.5;
-            color:#817377;
-        }
-
-        @keyframes pageLoadingSpin{
-            to{ transform:rotate(360deg); }
-        }
 
 
 
@@ -1809,10 +1700,12 @@
 
     </style>
 
+<script src="{{ asset('js/tf-navigation.js') }}" defer></script>
+
 </head>
 
 
-<body>
+<body data-tf-nav="dashboard">
 
 
     <!-- =====================================================
@@ -2540,136 +2433,6 @@
         <!-- =================================================
              CONTENT
              ================================================= -->
-
-        @php
-            /*
-             * Label loading per menu. Kelola User sengaja tidak
-             * dimasukkan karena sebelumnya memang tidak punya loading.
-             */
-            $loadingLabels = [
-                'total-rekap'    => 'Total Rekap Fallout',
-                'detail-fallout' => 'Detail Fallout',
-                'upload-data'    => 'Upload Data Fallout',
-                'edit-data'      => 'Edit Data',
-                'arsip-hapus'    => 'Arsip & Hapus',
-                'export-data'    => 'Export Data',
-            ];
-
-            $showPageLoading = !empty($activeWitel)
-                && !empty($activeMenu)
-                && isset($loadingLabels[$activeMenu]);
-        @endphp
-
-
-        <div
-            class="content-shell {{ $showPageLoading ? 'is-loading' : '' }}"
-            id="contentShell"
-        >
-
-            @if ($showPageLoading)
-
-                {{-- OVERLAY LOADING: menutup seluruh area .content --}}
-                <div
-                    class="page-loading"
-                    id="pageLoading"
-                    aria-live="polite"
-                    aria-label="Memuat {{ $loadingLabels[$activeMenu] }}"
-                >
-                    <div class="page-loading-card">
-
-                        <div class="page-loading-logo">
-                            <span>TF</span>
-                        </div>
-
-                        <div class="page-loading-spinner" aria-hidden="true"></div>
-
-                        <div class="page-loading-title">
-                            Memuat {{ $loadingLabels[$activeMenu] }}
-                        </div>
-
-                        <div class="page-loading-subtitle">
-                            Menyiapkan data {{ $witels[$activeWitel] ?? '' }}
-                        </div>
-
-                    </div>
-                </div>
-
-                {{-- Dijalankan langsung (sebelum isi halaman dirender)
-                     supaya scroll sudah terkunci sejak awal. --}}
-                <script>
-                (function () {
-
-                    var root   = document.documentElement;
-                    var shell  = document.getElementById('contentShell');
-                    var loader = document.getElementById('pageLoading');
-                    var done   = false;
-
-                    if (!shell || !loader) {
-                        return;
-                    }
-
-                    root.classList.add('page-loading-lock');
-
-                    function hideLoading() {
-
-                        if (done) {
-                            return;
-                        }
-
-                        done = true;
-
-                        loader.classList.add('is-hidden');
-                        shell.classList.remove('is-loading');
-                        root.classList.remove('page-loading-lock');
-
-                        setTimeout(function () {
-
-                            if (loader && loader.parentNode) {
-                                loader.parentNode.removeChild(loader);
-                            }
-
-                        }, 350);
-
-                    }
-
-                    /*
-                     * Timer 1 detik dimulai SETELAH semua script/resource
-                     * (Chart.js, SheetJS, font) selesai dimuat.
-                     */
-                    function startTimer() {
-                        setTimeout(hideLoading, 1000);
-                    }
-
-                    if (document.readyState === 'complete') {
-                        startTimer();
-                    } else {
-                        window.addEventListener('load', startTimer);
-                    }
-
-                    /*
-                     * Pengaman: kalau CDN lambat / gagal,
-                     * loading tidak boleh menggantung.
-                     */
-                    setTimeout(hideLoading, 6000);
-
-                    /*
-                     * Tombol Back browser (halaman dari bfcache):
-                     * jangan tampilkan loading lagi.
-                     */
-                    window.addEventListener('pageshow', function (event) {
-
-                        if (event.persisted) {
-                            hideLoading();
-                        }
-
-                    });
-
-                })();
-                </script>
-
-            @endif
-
-
         <div class="content">
 
 
